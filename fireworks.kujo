@@ -1,0 +1,11 @@
+from src.fireworks import create_client, chat, client_chat, client_models, client_embeddings, embeddings, parse_stream
+from src.provider import fireworks_provider, fireworks_driver
+export create_client:=create_client
+export chat:=chat
+export client_chat:=client_chat
+export client_models:=client_models
+export client_embeddings:=client_embeddings
+export embeddings:=embeddings
+export parse_stream:=parse_stream
+export fireworks_provider:=fireworks_provider
+export fireworks_driver:=fireworks_driver

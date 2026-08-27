@@ -1,0 +1,2 @@
+test_setup { from fireworks import create_client, client_chat, fireworks_provider }
+test "installed exports resolve" { c:=create_client({"api_key":"fixture","transport":func(url,o) { return Ok({"_status":200,"_body":"{\"choices\":[]}"}) }}); assert_true(client_chat(c,{})["ok"]); assert_equal(type(fireworks_provider({})),"dict") }

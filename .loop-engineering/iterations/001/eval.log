@@ -1,0 +1,32 @@
+
+## gate: release_quality
+$ bash scripts/release_quality_gate.sh
+
+============================================================
+Test Results
+============================================================
+Tests: 2 total, 2 passed, 0 failed
+Time:  17ms
+============================================================
+
+All tests passed! ✨
+
+============================================================
+Test Results
+============================================================
+Tests: 2 total, 2 passed, 0 failed
+Time:  7ms
+============================================================
+
+All tests passed! ✨
+Fireworks offline release gate: PASS (2 deterministic test files)
+gate release_quality: pass
+gate php_tests: skipped (no changed files matched)
+gate node_install: skipped (no changed files matched)
+gate node_tests: skipped (no changed files matched)
+gate typecheck: skipped (no changed files matched)
+gate build: skipped (no changed files matched)
+
+## gate: diff_check
+$ git diff --check
+gate diff_check: pass

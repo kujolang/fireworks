@@ -1,0 +1,29 @@
+# Native Fireworks OpenAI-compatible chat client with Fireworks reasoning and tool controls.
+func get(o,k,f) { if type(o)=="dict" && has_key(o,k) { return o[k] }; return f }
+func trim_slash(v) { r:=trim(v); while ends_with(r,"/") { r:=substring(r,0,len(r)-1) }; return r }
+func redact(v,s) { if type(v)=="string" && type(s)=="string" && s!="" { return replace(v,s,"[REDACTED]") }; return v }
+func valid(v) { if type(v)!="string" || trim(v)=="" { return "Fireworks base URL must be non-empty." }; r:=trim_slash(v); p:=split(r,"/"); if len(p)<3 || contains(r,"@") || contains(r,"?") || contains(r,"#") || contains(r,"\r") || contains(r,"\n") { return "Fireworks base URL is unsafe." }; if starts_with(lower(r),"https://") { return "" }; return "Fireworks remote endpoints must use HTTPS." }
+func create_client_impl(config) { if type(config)!="dict" { config:={} }; base:=trim_slash(get(config,"base_url","https://api.fireworks.ai/inference/v1")); key:=get(config,"api_key",null); if type(key)=="null" { key:=env("FIREWORKS_API_KEY") }; if type(key)!="string" { key:="" }; return {"base_url":base,"api_key":key,"timeout":get(config,"timeout",60.0),"transport":get(config,"transport",null),"validation_error":valid(base)} }
+func transport_for(c) { if type(get(c,"transport",null))=="function" { return c["transport"] }; return http_request }
+func call(c,path,payload,stream) {
+	if c["validation_error"]!="" { return {"ok":false,"message":c["validation_error"]} }
+	if c["api_key"]=="" { return {"ok":false,"message":"Fireworks API key is required."} }
+	h:={"Authorization":"Bearer "+c["api_key"],"Content-Type":"application/json"}
+	o:={"method":"POST","timeout":c["timeout"],"_headers":h}; if type(payload)=="dict" { o["_body"]:=to_json(payload) }; if stream { o["stream"]:=true }
+	t:=transport_for(c); result:=t(c["base_url"]+path,o)
+	match result {
+		case Err(e): { return {"ok":false,"message":redact(to_string(e),c["api_key"])} }
+		case Ok(r): {
+			s:=get(r,"_status",0); b:=get(r,"_body",""); d:=null; try { d:=parse_json(b) } except e { d:=null }
+			if s<200 || s>299 { return {"ok":false,"status_code":s,"message":redact(to_string(get(get(d,"error",{}),"message","Fireworks request failed")),c["api_key"]),"error_body":redact(b,c["api_key"])} }
+			return {"ok":true,"status_code":s,"data":d,"response":r}
+		}
+	}
+}
+export create_client:=create_client_impl
+export chat:=func(options) { return call(create_client_impl({}),"/chat/completions",options,false) }
+export client_chat:=func(c,options) { return call(c,"/chat/completions",options,false) }
+export client_models:=func(c) { t:=transport_for(c); return t(c["base_url"]+"/models",{"method":"GET","timeout":c["timeout"],"_headers":{"Authorization":"Bearer "+c["api_key"]}}) }
+export client_embeddings:=func(c,options) { return call(c,"/embeddings",options,false) }
+export embeddings:=func(options) { return client_embeddings(create_client_impl({}),options) }
+export parse_stream:=func(chunks,body) { combined:=""; if type(chunks)=="array" { for c in chunks { combined:=combined+c } } else { combined:=body }; events:=[]; for block in split(combined,"\n\n") { for line in split(block,"\n") { if starts_with(line,"data:") { raw:=trim(substring(line,5,len(line))); if raw=="[DONE]" { continue }; d:=null; try { d:=parse_json(raw) } except e { return {"ok":false,"events":[]} }; events=push(events,d) } } }; return {"ok":true,"events":events} }

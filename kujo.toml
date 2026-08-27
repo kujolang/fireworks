@@ -1,0 +1,4 @@
+[package]
+name = "fireworks"
+version = "0.1.0"
+[dependencies]

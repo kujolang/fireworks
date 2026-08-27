@@ -1,0 +1,1 @@
+Root exports are in `fireworks.kujo`; native Fireworks code is `src/fireworks.kujo`; the AI SDK driver is `src/provider.kujo`. Run `bash scripts/release_quality_gate.sh`. Preserve Fireworks reasoning/tool metadata, use immutable dependencies, and do not modify AI SDK core.

@@ -1,16 +1,45 @@
 # Kujo Fireworks Provider
 
-Native Fireworks OpenAI-compatible chat client with Fireworks reasoning, tools, vision, and an AI SDK adapter.
+[![Version](https://img.shields.io/badge/version-0.1.1-black)](https://github.com/kujolang/fireworks/releases/tag/v0.1.1)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+[![built with Kujo](https://img.shields.io/badge/built%20with-Kujo-white.svg)](https://github.com/kujolang/kujo)
+
+Fireworks AI inference and hosted-model controls for Kujo.
+
+## Install
 
 ```bash
-kujo package-add github:kujolang/fireworks@v0.1.0
+kujo run /path/to/kennel/kennel.kujo --interpreter -- add github:kujolang/fireworks@v0.1.1 --alias fireworks
+kujo run /path/to/kennel/kennel.kujo --interpreter -- install
 export FIREWORKS_API_KEY=your-key
 ```
 
+## 30-second quick start
+
 ```kujo
 from fireworks import create_client, client_chat
-c := create_client({})
-r := client_chat(c, {"model":"accounts/fireworks/models/kimi-k2-instruct-0905","messages":[{"role":"user","content":"Hello"}],"reasoning_effort":"high"})
+client := create_client({})
+result := client_chat(client, {"model":"accounts/fireworks/models/kimi-k2-instruct-0905","messages":[{"role":"user","content":"Hello from Kujo!"}]})
+print(result["data"]["choices"][0]["message"]["content"])
 ```
 
-Native use preserves Fireworks response fields, reasoning controls, tools, and usage metadata. `fireworks_provider()` supplies normalized AI SDK chat and streaming semantics. Tests are offline and credential-free.
+## Native API
+
+The native layer preserves Fireworks response fields, tools, structured output, reasoning, multimodal inputs, model metadata, and usage. Deployments, files, batches, and fine-tuning remain provider-owned.
+
+## AI SDK integration
+
+`fireworks_provider({"model": "accounts/fireworks/models/kimi-k2-instruct-0905"})` supplies normalized chat and streaming semantics through the compatible driver.
+
+## Authentication and security
+
+Set `FIREWORKS_API_KEY`. Remote endpoints require HTTPS; credentials are redacted and protected headers cannot be overridden.
+
+## Testing and documentation
+
+```bash
+bash scripts/release_quality_gate.sh
+bash scripts/verify_installed_package.sh
+```
+
+The default gate is deterministic and offline. See [docs/](docs/) for implementation and Contract v1 evidence.

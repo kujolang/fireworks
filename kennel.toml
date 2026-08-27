@@ -1,6 +1,6 @@
 [package]
 name = "fireworks"
-version = "0.1.0"
+version = "0.1.1"
 description = "Native Fireworks chat client for Kujo with an AI SDK driver."
 license = "MIT"
 repository = "https://github.com/kujolang/fireworks"
@@ -13,7 +13,7 @@ public_api = true
 minimum_version = "1.0.2"
 entry = "fireworks.kujo"
 sources = ["src", "."]
-includes = ["README.md", "CHANGELOG.md", "tests", "AGENTS.md", "FIREWORKS_IMPLEMENTATION_REPORT.md", "FIREWORKS_PROVIDER_PACKAGE_CONFORMANCE.md"]
+includes = ["docs", "examples", "README.md", "CHANGELOG.md", "tests", "AGENTS.md", "docs/FIREWORKS_IMPLEMENTATION_REPORT.md", "docs/FIREWORKS_PROVIDER_PACKAGE_CONFORMANCE.md"]
 excludes = [".git", "dist", "build", "kennel_packages"]
 [dependencies]
 ai-sdk = { source = "github:kujolang/ai-sdk", ref = "v1.1.0" }

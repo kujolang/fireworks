@@ -10,10 +10,9 @@ Fireworks AI inference and hosted-model controls for Kujo.
 
 ```bash
 kujo run /path/to/kennel/kennel.kujo \
-  --interpreter \
   -- add github:kujolang/fireworks@v0.1.1 \
   --alias fireworks
-kujo run /path/to/kennel/kennel.kujo --interpreter -- install
+kujo run /path/to/kennel/kennel.kujo -- install
 export FIREWORKS_API_KEY=your-key
 ```
 

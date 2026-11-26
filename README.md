@@ -8,7 +8,7 @@ Fireworks AI inference and hosted-model controls for Kujo.
 
 ## Install
 
-The current branch requires Kujo 1.5.0 or newer. Kujo 1.10.0 supports the
+The current branch requires Kujo 1.6.0 or newer. Kujo 1.10.0 supports the
 injected transport examples in both execution engines.
 
 ```bash

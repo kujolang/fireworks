@@ -12,6 +12,7 @@ func provider_impl(config) {
         "base_url":fireworks_endpoint(get(config,"base_url",FIREWORKS_CHAT_BASE)),
         "default_model":get(config,"model",""),
         "api_key_env":"FIREWORKS_API_KEY",
+        "package_provider":true,
         "capabilities":{"streaming":true,"tool_calls":true,"structured_output":true,"vision":true,"reasoning":true},
         "driver":driver(),
     }

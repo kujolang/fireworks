@@ -10,13 +10,13 @@ stage = "experimental"
 stability = "early"
 public_api = true
 [kujo]
-minimum_version = "1.5.0"
+minimum_version = "1.6.0"
 entry = "fireworks.kujo"
 sources = ["src", "."]
 includes = ["docs", "examples", "README.md", "CHANGELOG.md", "tests", "AGENTS.md", "docs/FIREWORKS_IMPLEMENTATION_REPORT.md", "docs/FIREWORKS_PROVIDER_PACKAGE_CONFORMANCE.md"]
 excludes = [".git", "dist", "build", "kennel_packages"]
 [dependencies]
-ai-sdk = { source = "github:kujolang/ai-sdk", ref = "v1.1.0" }
+ai-sdk = { source = "github:kujolang/ai-sdk", commit = "f3126dded28102f40d0ddecd50a559105c66f905" }
 [scripts]
 test = "bash scripts/release_quality_gate.sh"
 verify-offline = "bash scripts/release_quality_gate.sh"

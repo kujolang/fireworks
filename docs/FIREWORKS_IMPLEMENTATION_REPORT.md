@@ -22,7 +22,7 @@ Native client: `src/fireworks.kujo`; AI SDK adapter: `src/provider.kujo`; root e
 
 ## Kujo Requirement / AI SDK Dependency
 
-Kujo >= 1.0.2; `github:kujolang/ai-sdk@v1.1.0`.
+Current main requires Kujo 1.5.0 and pins `github:kujolang/ai-sdk@v1.1.0`.
 
 ## Authentication / Native Semantics / Streaming
 
@@ -30,7 +30,7 @@ Bearer `FIREWORKS_API_KEY`, HTTPS enforcement, URL credential rejection, redacti
 
 ## Tools / Structured Output / Reasoning / Multimodal / Embeddings
 
-Tools, response format, reasoning, and multimodal request fields remain provider-owned. Vision is declared where model-supported. Embeddings are not claimed.
+Tools, response format, reasoning, and multimodal request fields remain provider-owned. Vision is declared where model-supported. The native client supports embeddings.
 
 ## Usage / Finish Reasons / Errors
 

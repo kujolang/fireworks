@@ -1,3 +1,80 @@
-test_setup { from src.fireworks import create_client, client_chat, parse_stream }
+test_setup { from src.fireworks import create_client, client_chat, client_models, client_embeddings, parse_stream }
 test "client validates host and bearer auth" { c:=create_client({"api_key":"secret","transport":func(url,o) { assert_equal(o["_headers"]["Authorization"],"Bearer secret"); return Ok({"_status":200,"_body":"{\"choices\":[]}"}) }}); assert_true(client_chat(c,{"model":"llama-test","reasoning_effort":"high"})["ok"]); assert_true(create_client({"base_url":"http://remote.example"})["validation_error"]!="") }
 test "stream parser and redaction" { p:=parse_stream(["data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\n\n","data: [DONE]\n\n"],""); assert_true(p["ok"]); assert_equal(len(p["events"]),1); c:=create_client({"api_key":"secret","transport":func(url,o) { return Ok({"_status":401,"_body":"{\"error\":{\"message\":\"secret denied\"}}"}) }}); r:=client_chat(c,{}); assert_equal(contains(r["message"],"secret"),0) }
+
+test "native inference and model listing share request policy" {
+    client := create_client({"base_url":"https://api.example/inference/v1/","api_key":"fixture-key","timeout":7,"transport":func(url, options) {
+        assert_equal(options["_headers"]["Authorization"],"Bearer fixture-key")
+        assert_equal(options["redirects"],"none")
+        assert_equal(options["timeout"],7)
+        if options["method"] == "GET" {
+            assert_equal(url,"https://api.example/inference/v1/models")
+            assert_equal(has_key(options,"_body"),0)
+            return Ok({"_status":200,"_body":"{\"data\":[]}"})
+        }
+        assert_equal(url,"https://api.example/inference/v1/embeddings")
+        assert_equal(parse_json(options["_body"])["input"],["hello"])
+        return Ok({"_status":200,"_body":"{\"data\":[{\"embedding\":[0.3,0.7]}]}"})
+    }})
+    models := client_models(client)
+    match models {
+        case Ok(response): { assert_equal(parse_json(response["_body"])["data"],[]) }
+        case Err(failure): { assert_true(false,to_string(failure)) }
+    }
+    assert_equal(client_embeddings(client,{"model":"fixture-embed","input":["hello"]})["data"]["data"][0]["embedding"],[0.3,0.7])
+    unused := func(url, options) { return Err("unexpected fixture dispatch") }
+    invalid := create_client({"base_url":"http://api.example","api_key":"fixture-key","transport":unused})
+    match client_models(invalid) {
+        case Err(failure): { assert_equal(failure,"Fireworks base URL must be HTTPS.") }
+        case Ok(response): { assert_true(false) }
+    }
+    invalid = create_client({"api_key":"fixture-key","timeout":0,"transport":unused})
+    assert_equal(client_chat(invalid,{})["message"],"Fireworks timeout must be a positive finite number.")
+}
+
+test "native stream retains complete events across arbitrary chunks" {
+    client := create_client({"api_key":"fixture-key","transport":func(url, options) {
+        assert_equal(options["stream"],true)
+        assert_equal(options["_headers"]["Accept"],"text/event-stream")
+        return Ok({"_status":200,"_stream_chunks":[
+            ": heartbeat\r\ndata: {\"choices\":[{\"delta\":{",
+            "\"reasoning_content\":\"receipt\",\"content\":\"hello\"}}]}\r\n\r\ndata: [DO",
+            "NE]\r\n\r\n"
+        ]})
+    }})
+    streamed := client_chat(client,{"stream":true})
+    assert_true(streamed["ok"])
+    assert_equal(streamed["events"][0]["choices"][0]["delta"]["reasoning_content"],"receipt")
+    assert_equal(parse_stream([],"data: {\"choices\":[]}\n\ndata: [DONE]\n\n")["complete"],true)
+    assert_equal(parse_stream([false],"")["ok"],false)
+    incomplete := create_client({"api_key":"fixture-key","transport":func(url, options) {
+        return Ok({"_status":200,"_body":"data: {\"choices\":[]}\n\n"})
+    }})
+    assert_false(client_chat(incomplete,{"stream":true})["ok"])
+    client = create_client({"api_key":"fixture-key","transport":func(url, options) {
+        return Ok({"_status":200,"_stream_chunks":[
+            "data: {\"choices\":[{\"delta\":{\"content\":\"reply fixture-",
+            "key\"}}]}\n\ndata: [DONE]\n\n"
+        ]})
+    }})
+    scrubbed := client_chat(client,{"stream":true})
+    assert_equal(scrubbed["events"][0]["choices"][0]["delta"]["content"],"reply [REDACTED]")
+    raw := parse_stream(scrubbed["response"]["_stream_chunks"],scrubbed["response"]["_body"])
+    assert_equal(raw["events"],scrubbed["events"])
+}
+
+test "native rejects malformed success and sanitizes typed provider errors" {
+    client := create_client({"api_key":"fixture:\"\\key","transport":func(url, options) {
+        key := replace(options["_headers"]["Authorization"],"Bearer ","")
+        return Ok({"_status":422,"_body":to_json({"error":{"message":"denied " + key,"code":"fixture_invalid"}})})
+    }})
+    failure := client_chat(client,{})
+    assert_equal(failure["status_code"],422)
+    assert_equal(failure["message"],"denied [REDACTED]")
+    assert_equal(parse_json(failure["error_body"])["error"]["code"],"fixture_invalid")
+    assert_equal(parse_json(failure["error_body"])["error"]["message"],"denied [REDACTED]")
+    client = create_client({"api_key":"fixture-key","transport":func(url, options) {
+        return Ok({"_status":200,"_body":"[]"})
+    }})
+    assert_false(client_embeddings(client,{})["ok"])
+}

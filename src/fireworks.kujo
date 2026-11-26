@@ -1,29 +1,216 @@
-# Native Fireworks OpenAI-compatible chat client with Fireworks reasoning and tool controls.
-func get(o,k,f) { if type(o)=="dict" && has_key(o,k) { return o[k] }; return f }
-func trim_slash(v) { r:=trim(v); while ends_with(r,"/") { r:=substring(r,0,len(r)-1) }; return r }
-func redact(v,s) { if type(v)=="string" && type(s)=="string" && s!="" { return replace(v,s,"[REDACTED]") }; return v }
-func valid(v) { if type(v)!="string" || trim(v)=="" { return "Fireworks base URL must be non-empty." }; r:=trim_slash(v); p:=split(r,"/"); if len(p)<3 || contains(r,"@") || contains(r,"?") || contains(r,"#") || contains(r,"\r") || contains(r,"\n") { return "Fireworks base URL is unsafe." }; if starts_with(lower(r),"https://") { return "" }; return "Fireworks remote endpoints must use HTTPS." }
-func create_client_impl(config) { if type(config)!="dict" { config:={} }; base:=trim_slash(get(config,"base_url","https://api.fireworks.ai/inference/v1")); key:=get(config,"api_key",null); if type(key)=="null" { key:=env("FIREWORKS_API_KEY") }; if type(key)!="string" { key:="" }; return {"base_url":base,"api_key":key,"timeout":get(config,"timeout",60.0),"transport":get(config,"transport",null),"validation_error":valid(base)} }
-func transport_for(c) { if type(get(c,"transport",null))=="function" { return c["transport"] }; return http_request }
-func call(c,path,payload,stream) {
-	if c["validation_error"]!="" { return {"ok":false,"message":c["validation_error"]} }
-	if c["api_key"]=="" { return {"ok":false,"message":"Fireworks API key is required."} }
-	h:={"Authorization":"Bearer "+c["api_key"],"Content-Type":"application/json"}
-	o:={"method":"POST","timeout":c["timeout"],"_headers":h}; if type(payload)=="dict" { o["_body"]:=to_json(payload) }; if stream { o["stream"]:=true }
-	t:=transport_for(c); result:=t(c["base_url"]+path,o)
-	match result {
-		case Err(e): { return {"ok":false,"message":redact(to_string(e),c["api_key"])} }
-		case Ok(r): {
-			s:=get(r,"_status",0); b:=get(r,"_body",""); d:=null; try { d:=parse_json(b) } except e { d:=null }
-			if s<200 || s>299 { return {"ok":false,"status_code":s,"message":redact(to_string(get(get(d,"error",{}),"message","Fireworks request failed")),c["api_key"]),"error_body":redact(b,c["api_key"])} }
-			return {"ok":true,"status_code":s,"data":d,"response":r}
-		}
-	}
+CHAT_BASE := "https://api.fireworks.ai/inference/v1"
+
+func get(value, key, fallback) {
+    if type(value) == "dict" && has_key(value, key) { return value[key] }
+    return fallback
 }
-export create_client:=create_client_impl
-export chat:=func(options) { return call(create_client_impl({}),"/chat/completions",options,false) }
-export client_chat:=func(c,options) { return call(c,"/chat/completions",options,false) }
-export client_models:=func(c) { t:=transport_for(c); return t(c["base_url"]+"/models",{"method":"GET","timeout":c["timeout"],"_headers":{"Authorization":"Bearer "+c["api_key"]}}) }
-export client_embeddings:=func(c,options) { return call(c,"/embeddings",options,false) }
-export embeddings:=func(options) { return client_embeddings(create_client_impl({}),options) }
-export parse_stream:=func(chunks,body) { combined:=""; if type(chunks)=="array" { for c in chunks { combined:=combined+c } } else { combined:=body }; events:=[]; for block in split(combined,"\n\n") { for line in split(block,"\n") { if starts_with(line,"data:") { raw:=trim(substring(line,5,len(line))); if raw=="[DONE]" { continue }; d:=null; try { d:=parse_json(raw) } except e { return {"ok":false,"events":[]} }; events=push(events,d) } } }; return {"ok":true,"events":events} }
+
+func endpoint(value) {
+    if type(value) != "string" { return "" }
+    url := trim(value)
+    if regex_match(url, "[\\x00-\\x20\\x7f@?#\\\\]") { return "" }
+    if !regex_match(lower(url), "^https://(?:[a-z0-9][a-z0-9.-]*|\\[[0-9a-f:.]+\\])(?::[0-9]{1,5})?(?:/[a-z0-9._~/-]*)?$") { return "" }
+    for part in split(url,"/") {
+        if part == "." || part == ".." { return "" }
+    }
+    return regex_replace(url, "/+$", "")
+}
+
+func redact(text, key) {
+    if type(text) == "string" && key != "" { return replace(text, key, "[REDACTED]") }
+    return text
+}
+
+func redact_value(value, key) {
+    if key == "" { return value }
+    if type(value) == "string" { return redact(value,key) }
+    if type(value) != "dict" && type(value) != "array" { return value }
+    encoded := to_json(value)
+    key_literal := to_json(key)
+    if contains(encoded,substring(key_literal,1,len(key_literal)-1)) == 0 { return value }
+    // Inspect JSON text tokens so numbers and nested structure keep their types.
+    pattern := "\"(?:[^\"\\\\]|\\\\.)*\""
+    literals := regex_split(encoded,pattern)
+    index := 0
+    output := []
+    for token in regex_find_all(encoded,pattern) {
+        output = push(output,literals[index])
+        output = push(output,to_json(redact(parse_json(token),key)))
+        index = index + 1
+    }
+    return parse_json(join(push(output,literals[index]),""))
+}
+
+func redact_wire(text, key) {
+    if type(text) != "string" { return text }
+    if contains(text,key) == 0 && contains(text,"\\") == 0 { return text }
+    // Parse JSON strings before redaction so escaped credential values cannot
+    // surface when a consumer decodes the raw response.
+    try {
+        data := parse_json(text)
+        safe_data := redact_value(data,key)
+        if safe_data != data { return to_json(safe_data) }
+    } except error { }
+    encoded_key := to_json(key)
+    escaped_key := substring(encoded_key,1,len(encoded_key)-1)
+    return redact(redact(text,escaped_key),key)
+}
+
+func create_client_impl(config) {
+    base := endpoint(get(config,"base_url",CHAT_BASE))
+    key := get(config,"api_key",null)
+    if key == null { key = env("FIREWORKS_API_KEY") }
+    if type(key) != "string" { key = "" }
+    problem := ""
+    if base == "" { problem = "Fireworks base URL must be HTTPS." }
+    return {"base_url":base,"api_key":key,"timeout":get(config,"timeout",60.0),"transport":get(config,"transport",null),"validation_error":problem}
+}
+
+func request(client, base, path, method, payload, streaming) {
+    if base == "" { return Err("Fireworks base URL must be HTTPS.") }
+    key := get(client,"api_key","")
+    if type(key) != "string" || trim(key) == "" || regex_match(key,"[\\x00-\\x20\\x7f]") {
+        return Err("Fireworks API key is required and must be a valid bearer value.")
+    }
+    timeout := get(client,"timeout",60.0)
+    if (type(timeout) != "int" && type(timeout) != "float") || timeout <= 0 || timeout - timeout != 0 {
+        return Err("Fireworks timeout must be a positive finite number.")
+    }
+    if method == "POST" && type(payload) != "dict" { return Err("Fireworks request must be an object.") }
+    transport := get(client,"transport",null)
+    if type(transport) != "function" { transport = http_request }
+    headers := {"Authorization":"Bearer "+key}
+    if method == "POST" { headers["Content-Type"] := "application/json" }
+    options := {"method":method,"timeout":timeout,"redirects":"none","_headers":headers}
+    if type(payload) == "dict" { options["_body"] := to_json(payload) }
+    if streaming {
+        headers["Accept"] := "text/event-stream"
+        options["_headers"] := headers
+        options["stream"] := true
+    }
+    result := transport(base+path,options)
+    match result {
+        case Err(error): { return Err(redact(to_string(error),key)) }
+        case Ok(response): {
+            status := get(response,"_status",0)
+            if type(status) != "int" || status < 100 || status > 599 { return Err("Fireworks returned an invalid HTTP status.") }
+            safe_response := {}
+            for name in keys(response) {
+                safe_name := name
+                if name != "_body" && name != "_status" && name != "_headers" { safe_name = redact(name,key) }
+                if name == "_body" { safe_response[safe_name] := redact_wire(response[name],key) }
+                else { safe_response[safe_name] := redact_value(response[name],key) }
+            }
+            return Ok(safe_response)
+        }
+        case other: { return Err("Fireworks transport must return a Result.") }
+    }
+}
+
+func response_map(result,key,streaming) {
+    match result {
+        case Err(error): { return {"ok":false,"message":to_string(error)} }
+        case Ok(response): {
+            status := response["_status"]
+            body := get(response,"_body","")
+            if streaming && status >= 200 && status <= 299 {
+                decoded := parse_stream_impl(get(response,"_stream_chunks",[]),body)
+                if !decoded["ok"] || !decoded["complete"] || len(decoded["events"]) == 0 {
+                    return {"ok":false,"status_code":status,"message":"Fireworks returned a malformed event stream."}
+                }
+                for event in decoded["events"] {
+                    if has_key(event,"error") {
+                        problem := get(event,"error",null)
+                        message := get(problem,"message",problem)
+                        if type(message) != "string" { message = "Fireworks returned a stream error." }
+                        return {"ok":false,"status_code":status,"message":redact(message,key)}
+                    }
+                }
+                events := redact_value(decoded["events"],key)
+                if events != decoded["events"] {
+                    sanitized := range(0,len(events))
+                    for index in range(0,len(events)) { sanitized[index] = "data: " + to_json(events[index]) + "\n\n" }
+                    response["_stream_chunks"] := push(sanitized,"data: [DONE]\n\n")
+                    response["_body"] := ""
+                }
+                return {"ok":true,"status_code":status,"data":null,"events":events,"response":response}
+            }
+            data := null
+            try { data = redact_value(parse_json(body),key) } except error { data = null }
+            if status < 200 || status > 299 {
+                provider_error := get(data,"error",null)
+                message := get(provider_error,"message",provider_error)
+                if type(message) != "string" { message = "Fireworks request failed." }
+                return {"ok":false,"status_code":status,"message":message,"error_body":body}
+            }
+            if type(data) != "dict" { return {"ok":false,"status_code":status,"message":"Fireworks returned a malformed JSON response."} }
+            if has_key(data,"error") {
+                failure := data["error"]
+                message := get(failure,"message",failure)
+                if type(message) != "string" { message = "Fireworks request failed." }
+                return {"ok":false,"status_code":status,"message":message,"error_body":body}
+            }
+            return {"ok":true,"status_code":status,"data":data,"response":response}
+        }
+    }
+}
+
+func chat_impl(client, options) {
+    base := endpoint(get(client,"base_url",""))
+    streaming := get(options,"stream",false) == true
+    return response_map(request(client,base,"/chat/completions","POST",options,streaming),get(client,"api_key",""),streaming)
+}
+
+func embeddings_impl(client, options) {
+    base := endpoint(get(client,"base_url",""))
+    return response_map(request(client,base,"/embeddings","POST",options,false),get(client,"api_key",""),false)
+}
+
+func models_impl(client) {
+    return request(client,endpoint(get(client,"base_url","")),"/models","GET",null,false)
+}
+
+func parse_stream_impl(chunks, body) {
+    failed := {"ok":false,"events":[]}
+    combined := body
+    if type(chunks) == "array" && len(chunks) > 0 {
+        for chunk in chunks { if type(chunk) != "string" { return failed } }
+        combined = join(chunks,"")
+    }
+    if type(combined) != "string" { return failed }
+    if contains(combined,"\r") > 0 { combined = replace(replace(combined,"\r\n","\n"),"\r","\n") }
+    blocks := split(combined,"\n\n")
+    events := range(0,len(blocks))
+    count := 0
+    complete := false
+    for block in blocks {
+        data := ""
+        if starts_with(block,"data:") && contains(block,"\n") == 0 {
+            data = trim(substring(block,5,len(block)))
+        } else {
+            lines := []
+            for line in split(block,"\n") {
+                if starts_with(line,"data:") { lines = push(lines,substring(line,5,len(line))) }
+            }
+            data = trim(join(lines,"\n"))
+        }
+        if data == "" { continue }
+        if data == "[DONE]" { complete = true; break }
+        parsed := null
+        try { parsed = parse_json(data) } except error { return failed }
+        if type(parsed) != "dict" { return failed }
+        events[count] = parsed
+        count = count + 1
+    }
+    return {"ok":true,"events":slice(events,0,count),"complete":complete}
+}
+
+export create_client := create_client_impl
+export chat := func(options) { return chat_impl(create_client_impl({}),options) }
+export client_chat := chat_impl
+export client_models := models_impl
+export client_embeddings := embeddings_impl
+export embeddings := func(options) { return embeddings_impl(create_client_impl({}),options) }
+export parse_stream := parse_stream_impl
+export fireworks_endpoint := endpoint
+export FIREWORKS_CHAT_BASE := CHAT_BASE

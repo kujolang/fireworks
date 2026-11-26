@@ -1,11 +1,126 @@
-func get(o,k,f) { if type(o)=="dict" && has_key(o,k) { return o[k] }; return f }
-func provider_impl(config) { if type(config)!="dict" { config:={} }; return {"name":"fireworks","base_url":get(config,"base_url","https://api.fireworks.ai/inference/v1"),"default_model":get(config,"model",""),"api_key_env":"FIREWORKS_API_KEY","capabilities":{"streaming":true,"tool_calls":true,"structured_output":true,"vision":true,"reasoning":true},"driver":driver()} }
-func describe(p) { return {"id":"fireworks-compatible","protocol":"fireworks-openai-compatible","auth":{"mode":"bearer","allow_anonymous":false},"capabilities":p["capabilities"]} }
-func validate(p) { if type(p)!="dict" || get(p,"base_url","")=="" { return {"ok":false,"errors":[{"field":"base_url","message":"Fireworks provider requires a base URL."}]}}; return {"ok":true,"errors":[]} }
-func encode_chat(ctx) { o:=ctx["resolved_options"]; msgs:=[]; for m in ctx["messages"] { msgs=push(msgs,{"role":get(m,"role","user"),"content":get(m,"content","")}) }; body:={"model":get(o,"model",get(ctx["provider"],"default_model","")),"messages":msgs,"stream":get(o,"stream",false)}; for k in ["tools","tool_choice","response_format","temperature","top_p","max_tokens","reasoning","provider"] { if has_key(o,k) { body[k]:=o[k] } }; return {"url":ctx["provider"]["base_url"]+"/chat/completions","method":"POST","headers":{"Authorization":"Bearer "+ctx["credential"],"Content-Type":"application/json"},"protected_headers":["Authorization","Content-Type"],"body":to_json(body),"stream_mode":get(o,"stream",false)} }
-func decode_chat(ctx) { d:=ctx["data"]; c:={}; if len(get(d,"choices",[]))>0 { c:=d["choices"][0] }; m:=get(c,"message",{}); u:=get(d,"usage",{}); return {"ok":true,"request_id":get(ctx,"request_id",""),"model":get(d,"model",get(ctx,"fallback_model","")),"output_text":get(m,"content",""),"finish_reason":get(c,"finish_reason","stop"),"tool_calls":get(m,"tool_calls",[]),"usage":{"input_tokens":get(u,"prompt_tokens",0),"output_tokens":get(u,"completion_tokens",0),"total_tokens":get(u,"total_tokens",0)},"raw_provider":d} }
-func decode_error(ctx) { d:=ctx["data"]; if type(d)!="dict" || !has_key(d,"error") { return {"ok":false,"matched":false} }; e:=d["error"]; return {"ok":false,"matched":true,"category":"provider","message":get(e,"message","Fireworks request failed"),"provider_code":get(e,"code","fireworks_error"),"raw_provider":d} }
-func decode_stream(ctx) { p:=parse_stream(get(ctx,"chunks",[]),get(ctx,"body_text","")); if !p["ok"] { return p }; text:=""; for e in p["events"] { c:={}; if len(get(e,"choices",[]))>0 { c:=e["choices"][0] }; text:=text+get(get(c,"delta",{}),"content","") }; return {"ok":true,"output_text":text,"finish_reason":"stop","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"raw_provider":{"stream_events":p["events"]}} }
-func driver() { return {"contract":"ai-sdk-provider-driver","version":"1.0.0","id":"fireworks-compatible","describe":describe,"validate":validate,"encode_chat":encode_chat,"decode_chat":decode_chat,"decode_error":decode_error,"decode_stream":decode_stream} }
-export fireworks_provider:=provider_impl
-export fireworks_driver:=driver
+from src.fireworks import fireworks_endpoint, FIREWORKS_CHAT_BASE, parse_stream
+from src.ai_sdk import normalize_non_stream_success, normalize_stream_success
+
+func get(value, key, fallback) {
+    if type(value) == "dict" && has_key(value,key) { return value[key] }
+    return fallback
+}
+
+func provider_impl(config) {
+    return {
+        "name":"fireworks",
+        "base_url":fireworks_endpoint(get(config,"base_url",FIREWORKS_CHAT_BASE)),
+        "default_model":get(config,"model",""),
+        "api_key_env":"FIREWORKS_API_KEY",
+        "capabilities":{"streaming":true,"tool_calls":true,"structured_output":true,"vision":true,"reasoning":true},
+        "driver":driver(),
+    }
+}
+
+func describe(provider) {
+    return {"id":"fireworks-compatible","protocol":"fireworks-openai-compatible","auth":{"mode":"bearer","allow_anonymous":false},"capabilities":provider["capabilities"]}
+}
+
+func validate(provider, endpoint) {
+    if endpoint(get(provider,"base_url","")) == "" {
+        return {"ok":false,"errors":[{"field":"base_url","message":"Fireworks base URL must be HTTPS."}]}
+    }
+    return {"ok":true,"errors":[]}
+}
+
+func encode_chat(context) {
+    provider := context["provider"]
+    options := get(context,"options",{})
+    resolved := context["resolved_options"]
+    prepared := get(context,"payload",{})
+    payload := {}
+    for key in keys(prepared) {
+        if key != "stream_options" || get(prepared,"stream",false) { payload[key] := prepared[key] }
+    }
+    if len(keys(payload)) == 0 {
+        payload = {"model":get(resolved,"model",get(provider,"default_model","")),"messages":context["messages"],"stream":get(resolved,"stream",false)}
+    }
+    for key in ["tools","tool_choice","response_format","temperature","top_p","max_tokens","reasoning","provider"] {
+        if has_key(resolved,key) && has_key(payload,key) == 0 { payload[key] := resolved[key] }
+    }
+    for key in ["reasoning_effort","thinking","max_completion_tokens","service_tier","stream_options","parallel_tool_calls","frequency_penalty","presence_penalty","top_k","min_p","stop","seed","n","logprobs","top_logprobs","prediction","response_format","chat_template_kwargs"] {
+        if key == "stream_options" && !get(payload,"stream",false) { continue }
+        if has_key(options,key) { payload[key] := options[key] }
+        else if has_key(resolved,key) { payload[key] := resolved[key] }
+    }
+    headers := {"Authorization":"Bearer "+context["credential"],"Content-Type":"application/json"}
+    return {"url":provider["base_url"]+"/chat/completions","method":"POST","headers":headers,"protected_headers":["Authorization","Content-Type"],"body":to_json(payload),"stream_mode":get(payload,"stream",false)}
+}
+
+func preserve_accounting(result, accounting) {
+    usage := result["usage"]
+    for name in ["prompt_tokens_details","completion_tokens_details","output_tokens_details"] {
+        details := get(accounting,name,{})
+        metric := "reasoning_tokens"
+        if name == "prompt_tokens_details" { metric = "cached_tokens" }
+        value := get(details,metric,null)
+        if type(value) == "int" && value >= 0 { usage[name] := {metric:value} }
+    }
+    result["usage"] := usage
+    return result
+}
+
+func decode_chat(context, normalize, field, account) {
+    data := context["data"]
+    if type(data) != "dict" || has_key(data,"error") { return {"ok":false} }
+    result := normalize({"provider":{"name":"fireworks"}},field(context,"status_code",0),data,field(context,"fallback_model",""))
+    result["raw_provider"] := result["raw"]
+    return account(result,field(data,"usage",null))
+}
+
+func decode_error(context) {
+    data := context["data"]
+    if type(data) != "dict" { return {"ok":false,"matched":false} }
+    if has_key(data,"error") == 0 {
+        details := get(data,"detail",[])
+        if type(details) != "array" || len(details) == 0 { return {"ok":false,"matched":false} }
+        message := get(details[0],"msg","Fireworks rejected the request.")
+        if type(message) != "string" { message = "Fireworks rejected the request." }
+        return {"ok":false,"matched":true,"category":"provider","message":message,"provider_code":"fireworks_validation","raw_provider":data}
+    }
+    failure := data["error"]
+    message := get(failure,"message",failure)
+    if type(message) != "string" { message = "Fireworks request failed." }
+    return {"ok":false,"matched":true,"category":"provider","message":message,"provider_code":get(failure,"code","fireworks_error"),"raw_provider":data}
+}
+
+func decode_stream(context, parse, normalize, field, account) {
+    parsed := parse(field(context,"chunks",[]),field(context,"body_text",""))
+    if !parsed["ok"] || !parsed["complete"] || len(parsed["events"]) == 0 { return {"ok":false} }
+    accounting := null
+    for event in parsed["events"] {
+        if has_key(event,"error") { return {"ok":false} }
+        usage := field(event,"usage",null)
+        if type(usage) == "dict" { accounting = usage }
+    }
+    result := normalize({"provider":{"name":"fireworks"}},field(context,"status_code",0),parsed["events"],field(context,"fallback_model",""))
+    result["raw_provider"] := result["raw"]
+    return account(result,accounting)
+}
+
+func driver() {
+    normalize_chat := normalize_non_stream_success
+    normalize_stream := normalize_stream_success
+    parser := parse_stream
+    endpoint := fireworks_endpoint
+    validate_provider := validate
+    field := get
+    account := preserve_accounting
+    chat_decoder := decode_chat
+    stream_decoder := decode_stream
+    return {
+        "contract":"ai-sdk-provider-driver","version":"1.0.0","id":"fireworks-compatible",
+        "describe":describe,"validate":func(provider) { return validate_provider(provider,endpoint) },
+        "encode_chat":encode_chat,"decode_error":decode_error,
+        "decode_chat":func(context) { return chat_decoder(context,normalize_chat,field,account) },
+        "decode_stream":func(context) { return stream_decoder(context,parser,normalize_stream,field,account) },
+    }
+}
+
+export fireworks_provider := provider_impl
+export fireworks_driver := driver

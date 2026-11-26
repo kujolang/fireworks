@@ -1,3 +1,60 @@
-test_setup { from src.provider import fireworks_provider, fireworks_driver }
+test_setup { from src.provider import fireworks_provider, fireworks_driver; from src.ai_sdk import create_client, chat_completion_stream }
 test "compatible driver preserves Fireworks options" { p:=fireworks_provider({"model":"llama-test"}); d:=fireworks_driver(); e:=d["encode_chat"]({"provider":p,"credential":"secret","messages":[{"role":"user","content":"hi"}],"resolved_options":{"model":"llama-test","reasoning_effort":"high"}}); assert_equal(contains(e["url"],"chat/completions"),1); assert_equal(contains(e["body"],"llama-test"),1) }
 test "driver maps chat response and usage" { r:=fireworks_driver()["decode_chat"]({"fallback_model":"m","data":{"model":"m","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}}); assert_equal(r["output_text"],"ok"); assert_equal(r["usage"]["total_tokens"],6) }
+
+test "driver keeps prepared Fireworks tool turns and documented options" {
+    provider := fireworks_provider({"base_url":"https://api.example/inference/v1/","model":"fixture-model"})
+    driver := fireworks_driver()
+    assert_true(driver["validate"](provider)["ok"])
+    assert_false(driver["validate"](fireworks_provider({"base_url":"http://api.example"}))["ok"])
+    messages := [{"role":"assistant","content":"","reasoning_content":"prior receipt","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call-1","content":"fixture"}]
+    options := {"reasoning_effort":"high","stream_options":{"include_usage":true},"parallel_tool_calls":false,"top_k":10}
+    encoded := driver["encode_chat"]({"provider":provider,"credential":"fixture-key","messages":messages,"payload":{"model":"fixture-model","messages":messages,"stream":false},"resolved_options":{"model":"fixture-model"},"options":options})
+    assert_equal(encoded["url"],"https://api.example/inference/v1/chat/completions")
+    body := parse_json(encoded["body"])
+    assert_equal(body["messages"][0]["reasoning_content"],"prior receipt")
+    assert_equal(body["messages"][1]["tool_call_id"],"call-1")
+    assert_equal(body["reasoning_effort"],"high")
+    assert_equal(body["parallel_tool_calls"],false)
+    assert_equal(body["top_k"],10)
+    assert_equal(has_key(body,"stream_options"),0)
+}
+
+test "pinned SDK keeps buffered Fireworks reasoning and indexed tool calls" {
+    client := create_client(fireworks_provider({"model":"fixture-model"}),"fixture-key")
+    transport := func(url, options) {
+        payload := parse_json(options["_body"])
+        assert_equal(options["_headers"]["Authorization"],"Bearer fixture-key")
+        assert_equal(payload["reasoning_effort"],"high")
+        assert_equal(payload["stream_options"]["include_usage"],true)
+        assert_equal(payload["messages"][0]["reasoning_content"],"prior receipt")
+        assert_equal(payload["messages"][1]["tool_call_id"],"fixture-call")
+        return Ok({"_status":200,"_stream_chunks":[
+            "data: {\"id\":\"reply\",\"choices\":[{\"delta\":{\"reasoning_content\":\"receipt\",\"content\":\"answer\",\"tool_calls\":[{\"index\":0,\"id\":\"tool1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\"}}]}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens_details\":{\"reasoning_tokens\":3}}}\r\n\r\n",
+            "data: [DONE]\r\n\r\n"
+        ]})
+    }
+    messages := [{"role":"assistant","content":"","reasoning_content":"prior receipt","tool_calls":[{"id":"fixture-call","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","content":"fixture answer","tool_call_id":"fixture-call"}]
+    result := chat_completion_stream(client,messages,{"transport":transport,"max_retries":0,"reasoning_effort":"high"},func(event) { return null })
+    assert_true(result["ok"])
+    assert_equal(result["output_text"],"answer")
+    assert_equal(result["finish_reason"],"tool_calls")
+    assert_equal(result["tool_calls"][0]["function"]["arguments"],"{}")
+    assert_equal(result["usage"]["total_tokens"],7)
+    assert_equal(result["usage"]["prompt_tokens_details"]["cached_tokens"],2)
+    assert_equal(result["usage"]["completion_tokens_details"]["reasoning_tokens"],3)
+    assert_equal(result["raw"]["stream_events"][0]["choices"][0]["delta"]["reasoning_content"],"receipt")
+}
+
+test "malformed driver responses and typed errors are explicit" {
+    driver := fireworks_driver()
+    assert_false(driver["decode_chat"]({"data":[]})["ok"])
+    assert_false(driver["decode_stream"]({"body_text":"data: {\"choices\":[]}\n\n"})["ok"])
+    failure := driver["decode_error"]({"data":{"error":{"message":"invalid model","code":"invalid_model"}}})
+    assert_equal(failure["message"],"invalid model")
+    assert_equal(failure["provider_code"],"invalid_model")
+    validation := driver["decode_error"]({"data":{"detail":[{"msg":"missing model"}]}})
+    assert_equal(validation["message"],"missing model")
+}

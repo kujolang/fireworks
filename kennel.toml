@@ -10,7 +10,7 @@ stage = "experimental"
 stability = "early"
 public_api = true
 [kujo]
-minimum_version = "1.0.2"
+minimum_version = "1.5.0"
 entry = "fireworks.kujo"
 sources = ["src", "."]
 includes = ["docs", "examples", "README.md", "CHANGELOG.md", "tests", "AGENTS.md", "docs/FIREWORKS_IMPLEMENTATION_REPORT.md", "docs/FIREWORKS_PROVIDER_PACKAGE_CONFORMANCE.md"]
